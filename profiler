@@ -1,0 +1,174 @@
+#!/bin/bash
+
+# Function to handle script shutdown on interrupt
+cleanup() {
+    echo -e "\n\nScript interrupted. Cleaning up..."
+    rm -f "$TMP_FILE"
+    rm -rf "$PPROF_DIR"
+    exit 1
+}
+
+# Detect OS and set platform-specific variables
+OS=$(uname -s | tr '[:upper:]' '[:lower:]')
+if [[ "$OS" == "cygwin" || "$OS" == "mingw"* || "$OS" == "msys" ]]; then
+    IS_WINDOWS=true
+else
+    IS_WINDOWS=false
+fi
+
+# Set trap to catch Ctrl+C (SIGINT) and call the cleanup function
+trap cleanup SIGINT
+
+# Set pprof directory dynamically based on the current user's home directory
+if $IS_WINDOWS; then
+    PPROF_DIR="$HOME/pprof"
+    PPROF_DIR=$(cygpath -w "$PPROF_DIR") # Convert path for Windows compatibility
+else
+    PPROF_DIR="$HOME/pprof"
+fi
+
+# Ensure the pprof folder exists
+mkdir -p "$PPROF_DIR"
+
+# Check if the required arguments are provided
+if [ $# -ne 2 ]; then
+    if [[ "$1" == "help" && -z "$2" ]]; then
+        echo -e "\n-----------------"
+        echo -e "<profile_type> :"
+        echo -e "-----------------"
+        echo -e "c - CPU profiling"
+        echo -e "h - Heap profiling"
+        echo -e "g - Goroutine profiling"
+        echo -e "health - Check health status"
+        echo -e "\n-----------------"
+        echo -e "<IP_ADDRESS> :"
+        echo -e "-----------------"
+        echo -e "IP address of the target application"
+        echo -e "\n"
+        exit 0
+    else
+        echo "ERROR: INVALID ARGUMENTS. Usage: <profile_type> <IP_ADDRESS>"
+        exit 1
+    fi
+fi
+
+profile_type=$1
+ip_address=$2
+
+# If the profile type is 'health', retrieve the health status from the provided IP
+if [ "$profile_type" == "health" ]; then
+    HEALTH_ENDPOINT="http://${ip_address}:8080/health"
+    echo -e "\nChecking health status at ${HEALTH_ENDPOINT}..."
+
+    health_status=$(curl -s "$HEALTH_ENDPOINT")
+
+    if [ $? -eq 0 ]; then
+        echo -e "\n=== Health Status ==="
+        
+        if command -v jq &> /dev/null; then
+            echo "$health_status" | jq .
+        else
+            echo "$health_status"
+            echo -e "\nNote: 'jq' is not installed. JSON output will not be formatted."
+            
+            read -p "Do you want to install 'jq'? (y/n): " install_jq
+            if [[ "$install_jq" == "y" || "$install_jq" == "Y" ]]; then
+                echo "Installing 'jq'..."
+                if $IS_WINDOWS; then
+                    echo "Please install 'jq' manually by downloading it from https://stedolan.github.io/jq/"
+                else
+                    if command -v apt &> /dev/null; then
+                        sudo apt update && sudo apt install -y jq
+                    elif command -v yum &> /dev/null; then
+                        sudo yum install -y jq
+                    elif command -v dnf &> /dev/null; then
+                        sudo dnf install -y jq
+                    elif command -v pacman &> /dev/null; then
+                        sudo pacman -Sy jq
+                    else
+                        echo "ERROR: Package manager not supported. Please install 'jq' manually."
+                        exit 1
+                    fi
+                fi
+                if command -v jq &> /dev/null; then
+                    echo "$health_status" | jq .
+                else
+                    echo -e "\nERROR: 'jq' installation failed or not available."
+                fi
+            else
+                echo -e "\nSkipping 'jq' installation. Raw JSON output:"
+                echo "$health_status"
+            fi
+        fi
+    else
+        echo "Failed to retrieve health status. Ensure the IP and endpoint are correct."
+    fi
+    exit 0
+fi
+
+TMP_FILE=$(mktemp)
+
+case $profile_type in
+    h)
+        PPROF_ENDPOINT="http://${ip_address}:6060/debug/pprof/heap"
+        PROFILE_DESC="Heap"
+        ;;
+    c)
+        PPROF_ENDPOINT="http://${ip_address}:6060/debug/pprof/profile?seconds=30"
+        PROFILE_DESC="CPU"
+        ;;
+    g)
+        PPROF_ENDPOINT="http://${ip_address}:6060/debug/pprof/goroutine"
+        PROFILE_DESC="Goroutine"
+        ;;
+    *)
+        echo "ERROR: Invalid profile type. Only 'h' (heap), 'c' (cpu), 'g' (goroutine), and 'health' are allowed."
+        exit 1
+        ;;
+esac
+
+echo -e "\n============================="
+echo -e "       ______    _____     "
+echo -e "      / _____\  /  _  \  "
+echo -e "      | |  __   | | | |  "
+echo -e "      | | |_ |  | | | |  "
+echo -e "      | |__| |  | |_| |  "
+echo -e "      \______/  \_____/  "
+echo -e "\n        PPROF CHECKER  "
+echo -e "==============================="
+
+if ! command -v go &> /dev/null; then
+    echo -e "Go tool not found. Please install Go to use this script."
+    exit 1
+fi
+
+echo -e "Collecting ${PROFILE_DESC} profile data..."
+go tool pprof -proto "$PPROF_ENDPOINT" > "$TMP_FILE"
+if [ $? -ne 0 ]; then
+    echo "ERROR: Failed to collect ${PROFILE_DESC} profile data. Please ensure pprof is enabled in the service."
+    rm -f "$TMP_FILE"
+    rm -rf "$PPROF_DIR"
+    exit 1
+fi
+
+echo -e "\n=== Top ${PROFILE_DESC} Usage ==="
+go tool pprof -top "$TMP_FILE" | head -n 10
+
+echo -e "\n==============================================="
+read -p "Do you want to view the web interface? (y/n): " choice
+echo -e "==============================================="
+
+if [[ "$choice" == "y" || "$choice" == "Y" ]]; then
+    echo -e "\n=== Opening web view... ==="
+    go tool pprof -http=":" "$TMP_FILE"
+else
+    echo -e "\nWeb view skipped."
+fi
+
+if [ -f "$TMP_FILE" ]; then
+    echo "Cleaning up..."
+    rm "$TMP_FILE"
+fi
+
+# Remove pprof folder upon script exit
+rm -rf "$PPROF_DIR"
