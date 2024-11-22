@@ -63,38 +63,28 @@ if [ "$profile_type" == "health" ]; then
     health_status=$(curl -s "$HEALTH_ENDPOINT")
 
     if [ $? -eq 0 ]; then
-        echo -e "\n=== Health Status ==="
-        
         if command -v jq &> /dev/null; then
+            echo -e "\n=== Health Status ==="
             echo "$health_status" | jq .
         else
-            echo "$health_status"
             echo -e "\nNote: 'jq' is not installed. JSON output will not be formatted."
-            
             read -p "Do you want to install 'jq'? (y/n): " install_jq
             if [[ "$install_jq" == "y" || "$install_jq" == "Y" ]]; then
                 echo "Installing 'jq'..."
-                if $IS_WINDOWS; then
-                    echo "Please install 'jq' manually by downloading it from https://stedolan.github.io/jq/"
+                if command -v apt &> /dev/null; then
+                    sudo apt update && sudo apt install -y jq
+                elif command -v yum &> /dev/null; then
+                    sudo yum install -y jq
+                elif command -v dnf &> /dev/null; then
+                    sudo dnf install -y jq
+                elif command -v pacman &> /dev/null; then
+                    sudo pacman -Sy jq
                 else
-                    if command -v apt &> /dev/null; then
-                        sudo apt update && sudo apt install -y jq
-                    elif command -v yum &> /dev/null; then
-                        sudo yum install -y jq
-                    elif command -v dnf &> /dev/null; then
-                        sudo dnf install -y jq
-                    elif command -v pacman &> /dev/null; then
-                        sudo pacman -Sy jq
-                    else
-                        echo "ERROR: Package manager not supported. Please install 'jq' manually."
-                        exit 1
-                    fi
+                    echo "ERROR: Package manager not supported. Please install 'jq' manually."
+                    exit 1
                 fi
-                if command -v jq &> /dev/null; then
-                    echo "$health_status" | jq .
-                else
-                    echo -e "\nERROR: 'jq' installation failed or not available."
-                fi
+                echo -e "\n=== Health Status ==="
+                echo "$health_status" | jq .
             else
                 echo -e "\nSkipping 'jq' installation. Raw JSON output:"
                 echo "$health_status"
